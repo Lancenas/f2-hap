@@ -1,0 +1,10 @@
+{
+  "modelVersion": "6.0.1",
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "F2 HAP entry module.",
+  "main": "Index.ets",
+  "author": "Lancenas",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

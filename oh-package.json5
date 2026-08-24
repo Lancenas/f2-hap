@@ -1,0 +1,12 @@
+{
+  "modelVersion": "6.0.1",
+  "name": "f2-hap",
+  "version": "0.1.0",
+  "description": "F2 Downloader for HarmonyOS NEXT — an ArkTS/ArkUI port of the f2 multi-platform downloader.",
+  "author": "Lancenas",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.21"
+  }
+}

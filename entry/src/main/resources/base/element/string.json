@@ -1,0 +1,10 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "F2 Downloader for HarmonyOS NEXT" },
+    { "name": "EntryAbility_desc", "value": "Multi-platform video downloader" },
+    { "name": "EntryAbility_label", "value": "F2 下载器" },
+    { "name": "perm_internet", "value": "解析分享链接并下载媒体文件" },
+    { "name": "perm_network", "value": "检测网络状态，避免无网时发起下载" },
+    { "name": "perm_background", "value": "切到后台时继续完成正在进行的下载" }
+  ]
+}
