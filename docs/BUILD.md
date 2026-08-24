@@ -58,6 +58,25 @@ DevEco Studio 打开本工程 → `File > Project Structure > Project > Signing 
 
 之后 DevEco 会把签名配置（含**密文**口令）写进 `build-profile.json5`。把其中 `material` 片段另存为 `build-profile.local.json5`（已在 `.gitignore`），命令行脚本就能复用：
 
+### ⚠️ 最容易漏的一步：`products` 必须引用 `signingConfig`
+
+即使 `app.signingConfigs` 里配好了证书和口令，如果 `app.products[].default` **没有** `"signingConfig": "default"` 这一行，hvigor 不知道该用哪份配置，会**静默产出未签名包**（`entry-default-unsigned.hap`），部署时报 `code:9568320 / no signature file`。
+
+正确结构（`build-profile.json5`）：
+
+```json5
+"products": [
+  {
+    "name": "default",
+    "signingConfig": "default",   // ← 这一行必须有，名字要和 signingConfigs[].name 一致
+    "targetSdkVersion": "6.1.1(24)",
+    ...
+  }
+]
+```
+
+DevEco 自动签名通常只填 `signingConfigs` 数组、不补 `products` 引用，需要手动加这一行。本工程仓库里的 `build-profile.json5` 已是干净模板（无签名），本地构建依赖 DevEco 自动填入的完整配置或 `build-profile.local.json5` 口令。
+
 ```json5
 {
   "keyPassword": "0000001B....",
