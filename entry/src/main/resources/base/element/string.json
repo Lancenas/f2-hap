@@ -5,6 +5,7 @@
     { "name": "EntryAbility_label", "value": "F2 下载器" },
     { "name": "perm_internet", "value": "解析分享链接并下载媒体文件" },
     { "name": "perm_network", "value": "检测网络状态，避免无网时发起下载" },
-    { "name": "perm_background", "value": "切到后台时继续完成正在进行的下载" }
+    { "name": "perm_background", "value": "切到后台时继续完成正在进行的下载" },
+    { "name": "perm_pasteboard", "value": "读取剪贴板中的分享链接，自动帮你填入输入框" }
   ]
 }

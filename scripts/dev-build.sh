@@ -111,6 +111,48 @@ restore_profile() {
   if [ -f "$BACKUP" ]; then
     mv -f "$BACKUP" "$PROFILE"
     log "已还原 build-profile.json5"
+  else
+    # 兜底：.bak 缺失（如脚本中途被信号打断）时，直接写回无签名干净模板，
+    # 避免本机证书口令残留在仓库里。
+    cat > "$PROFILE" <<'EOF'
+{
+  "app": {
+    // 签名配置不入库：证书路径与口令因机器而异。
+    // 两种方式任选：
+    //   1) DevEco Studio: File > Project Structure > Signing Configs > 勾选自动签名
+    //   2) 命令行: bash scripts/dev-build.sh  （自动从 ~/.ohos/config 注入本机调试证书）
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "6.1.1(24)",
+        "compatibleSdkVersion": "6.1.1(24)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        { "name": "default", "applyToProducts": ["default"] }
+      ]
+    }
+  ]
+}
+EOF
+    log "已重置 build-profile.json5 为无签名干净模板"
   fi
 }
 trap restore_profile EXIT INT TERM

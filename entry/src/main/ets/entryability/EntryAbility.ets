@@ -13,6 +13,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { ConfigStore } from '../core/store/ConfigStore';
 import { TaskManager } from '../core/download/TaskManager';
 import { Logger } from '../core/util/Logger';
@@ -24,13 +25,27 @@ const TAG: string = 'F2Hap';
 /** 首页会监听这个 key，收到非空就自动填入输入框。 */
 export const SHARED_URL_KEY: string = 'sharedUrl';
 
+/** 读取剪贴板需要的隐私权限（user_grant，必须动态申请）。 */
+const PERMS: Array<Permissions> = ['ohos.permission.READ_PASTEBOARD'];
+
 export default class EntryAbility extends UIAbility {
   async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
     hilog.info(DOMAIN, TAG, 'EntryAbility onCreate');
     AppStorage.setOrCreate<string>(SHARED_URL_KEY, '');
+    await this.requestPasteboardPerm();
     await ConfigStore.init(this.context);
     await TaskManager.init(this.context);
     this.pickSharedUrl(want);
+  }
+
+  /** 动态申请剪贴板读取权限；已授权时系统不会再弹窗，失败仅告警（不影响其它功能）。 */
+  private async requestPasteboardPerm(): Promise<void> {
+    try {
+      const atManager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      await atManager.requestPermissionsFromUser(this.context, PERMS);
+    } catch (e) {
+      Logger.warn(`申请剪贴板权限失败：${(e as Error).message}`);
+    }
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
