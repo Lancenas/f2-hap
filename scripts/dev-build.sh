@@ -91,16 +91,32 @@ done
 [ -n "$HVIGORW" ] || die "找不到 hvigorw。请确认已安装 DevEco Studio。"
 
 # ---------------------------------------------------------------- 4. 签名证书
-CER="$(ls "${HOME}"/.ohos/config/default_harmony_*.cer 2>/dev/null | head -1 || true)"
-P12="$(ls "${HOME}"/.ohos/config/default_harmony_*.p12 2>/dev/null | head -1 || true)"
-P7B="$(ls "${HOME}"/.ohos/config/default_harmony_*.p7b 2>/dev/null | head -1 || true)"
+# 优先匹配与本工程相关的调试证书（如 default_f2-hap_*），找不到再回退通用 default_harmony_*。
+CER="$(ls "${HOME}"/.ohos/config/*f2-hap*.cer 2>/dev/null | head -1 || true)"
+P12="$(ls "${HOME}"/.ohos/config/*f2-hap*.p12 2>/dev/null | head -1 || true)"
+P7B="$(ls "${HOME}"/.ohos/config/*f2-hap*.p7b 2>/dev/null | head -1 || true)"
+if [ -z "$CER" ] || [ -z "$P12" ] || [ -z "$P7B" ]; then
+  CER="$(ls "${HOME}"/.ohos/config/default_harmony_*.cer 2>/dev/null | head -1 || true)"
+  P12="$(ls "${HOME}"/.ohos/config/default_harmony_*.p12 2>/dev/null | head -1 || true)"
+  P7B="$(ls "${HOME}"/.ohos/config/default_harmony_*.p7b 2>/dev/null | head -1 || true)"
+fi
 
 APP_BUNDLE="$(sed -n 's/.*"bundleName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${PROJECT_ROOT}/AppScope/app.json5" | head -1)"
 EFFECTIVE_BUNDLE="$APP_BUNDLE"
 
 SIGNED=0
-if [ -n "$CER" ] && [ -n "$P12" ] && [ -n "$P7B" ]; then
+# 若 DevEco 已在本工程执行过自动签名（build-profile.json5 含 signingConfigs 且证书指向本工程），
+# 直接复用，不临时注入、也不在结束时清空（保留 DevEco 写入的口令）。
+DEV_SIGN_CER="$(sed -n 's/.*"certpath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" | head -1)"
+if grep -q '"signingConfigs"' "$PROFILE" 2>/dev/null && [ -n "$DEV_SIGN_CER" ] && echo "$DEV_SIGN_CER" | grep -q "f2-hap"; then
   SIGNED=1
+  USE_DEV_PROFILE=1
+  KEY_PASSWORD="$(sed -n 's/.*"keyPassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" | head -1)"
+  STORE_PASSWORD="$(sed -n 's/.*"storePassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" | head -1)"
+  log "复用 DevEco 自动签名配置: $(basename "$DEV_SIGN_CER")"
+elif [ -n "$CER" ] && [ -n "$P12" ] && [ -n "$P7B" ]; then
+  SIGNED=1
+  USE_DEV_PROFILE=0
   log "发现调试证书: $(basename "$CER")"
 else
   warn "未在 ~/.ohos/config 找到调试证书，将产出 *未签名* HAP。"
@@ -112,9 +128,13 @@ restore_profile() {
     mv -f "$BACKUP" "$PROFILE"
     log "已还原 build-profile.json5"
   else
-    # 兜底：.bak 缺失（如脚本中途被信号打断）时，直接写回无签名干净模板，
-    # 避免本机证书口令残留在仓库里。
-    cat > "$PROFILE" <<'EOF'
+    # 兜底：.bak 缺失（如脚本中途被信号打断，或本次直接复用 DevEco 已填的签名配置）。
+    # 复用 DevEco 配置时不重置，避免清掉 DevEco 写入的口令；仅当 build-profile.json5
+    # 确实为空签名时才写回干净模板，防止本机口令残留仓库。
+    if grep -q '"signingConfigs"' "$PROFILE" 2>/dev/null; then
+      log "保留 build-profile.json5 现有签名配置（DevEco 自动签名）"
+    else
+      cat > "$PROFILE" <<'EOF'
 {
   "app": {
     // 签名配置不入库：证书路径与口令因机器而异。
@@ -152,17 +172,23 @@ restore_profile() {
   ]
 }
 EOF
-    log "已重置 build-profile.json5 为无签名干净模板"
+      log "已重置 build-profile.json5 为无签名干净模板"
+    fi
   fi
 }
 trap restore_profile EXIT INT TERM
 
 KEY_PASSWORD=""
 STORE_PASSWORD=""
+LOCAL_CFG="${PROJECT_ROOT}/build-profile.local.json5"
 if [ "$SIGNED" = "1" ]; then
   KEY_PASSWORD="${OHOS_KEY_PASSWORD:-}"
   STORE_PASSWORD="${OHOS_STORE_PASSWORD:-}"
-  LOCAL_CFG="${PROJECT_ROOT}/build-profile.local.json5"
+  # 优先级：环境变量 > DevEco 已写入 build-profile.json5 的口令 > 本地快照
+  if [ -z "$KEY_PASSWORD" ]; then
+    KEY_PASSWORD="$(sed -n 's/.*"keyPassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" | head -1)"
+    STORE_PASSWORD="$(sed -n 's/.*"storePassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" | head -1)"
+  fi
   if [ -z "$KEY_PASSWORD" ] && [ -f "$LOCAL_CFG" ]; then
     KEY_PASSWORD="$(sed -n 's/.*"keyPassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'     "$LOCAL_CFG" | head -1)"
     STORE_PASSWORD="$(sed -n 's/.*"storePassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOCAL_CFG" | head -1)"
@@ -170,8 +196,9 @@ if [ "$SIGNED" = "1" ]; then
   if [ -z "$KEY_PASSWORD" ] || [ -z "$STORE_PASSWORD" ]; then
     warn "缺少 keystore 口令，本次产出未签名 HAP。补齐方式："
     warn "  a) export OHOS_KEY_PASSWORD=... OHOS_STORE_PASSWORD=..."
-    warn "  b) 把 DevEco 自动签名的 material 片段存为 build-profile.local.json5"
-    warn "  c) 直接在 DevEco Studio 里 Build > Build Hap(s)"
+    warn "  b) 在 DevEco Studio 执行一次自动签名（File > Project Structure > Signing Configs），"
+    warn "     本脚本会自动复用 build-profile.json5 里 DevEco 写入的口令"
+    warn "  c) 直接在 DevEco Studio 里 Build > Build Hap(s) / Build App(s)"
     SIGNED=0
   fi
 fi
@@ -196,7 +223,7 @@ if [ "$SIGNED" = "1" ]; then
   fi
 fi
 
-if [ "$SIGNED" = "1" ]; then
+if [ "$SIGNED" = "1" ] && [ "$USE_DEV_PROFILE" = "0" ]; then
   BUNDLE_OVERRIDE=""
   if [ "$EFFECTIVE_BUNDLE" != "$APP_BUNDLE" ]; then
     BUNDLE_OVERRIDE="\"bundleName\": \"${EFFECTIVE_BUNDLE}\","
