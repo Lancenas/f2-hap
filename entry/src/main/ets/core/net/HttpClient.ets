@@ -124,6 +124,10 @@ export class HttpClient {
       } catch (e) {
         lastErr = errText(e as object);
         lastStatus = 0;
+        // 2300047 重定向超限：重试无意义，直接终止循环
+        if (lastErr.includes('2300047') || lastErr.toLowerCase().includes('redirection')) {
+          break;
+        }
       } finally {
         req.destroy();
       }
@@ -175,17 +179,58 @@ export class HttpClient {
    *
    * 短链解析必须用这个：抖音 v.douyin.com 的 302 Location 里带 /share/video/<awemeId>/，
    * 而底层自动跟随后拿不到中间的 Location。
+   *
+   * 重要坑：本机 SDK 的 http 模块在 `maxRedirects: 0` 时对 302 并非返回响应，
+   * 而是抛 `2300047 The number of redirections reaches the maximum allowed`（底层仍尝试跟随）。
+   * 因此这里注册 `headersReceive` 事件，在抛错前先把 302 的 Location 抓出来，
+   * catch 里用它继续下一跳，而不是依赖返回值。
    */
   static async resolveFinalUrl(url: string, headers: Record<string, string>): Promise<string> {
     let current: string = url;
     for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
-      const r: HttpResult = await HttpClient.get(current, headers, false);
-      const next: string = r.redirectTo();
-      if (next === '') {
-        return current;
+      const req = http.createHttp();
+      let caughtLocation: string = '';
+      try {
+        req.on('headersReceive', (hdr: Object) => {
+          const h: Record<string, string> = normalizeHeaders(hdr);
+          const loc: string = headerOf(h, 'location');
+          if (loc !== '') {
+            caughtLocation = loc;
+          }
+        });
+        const opts: http.HttpRequestOptions = {
+          method: http.RequestMethod.GET,
+          header: headers,
+          expectDataType: http.HttpDataType.STRING,
+          connectTimeout: CONNECT_TIMEOUT,
+          readTimeout: READ_TIMEOUT,
+          usingCache: false,
+          maxRedirects: 0,
+        };
+        const resp: http.HttpResponse = await req.request(current, opts);
+        // 部分 SDK 版本会直接返回 3xx（不抛错），此时走返回值路径
+        const r = new HttpResult();
+        r.status = resp.responseCode as number;
+        r.headers = normalizeHeaders(resp.header);
+        const next: string = r.redirectTo();
+        if (next === '') {
+          return current;
+        }
+        current = absolutize(current, next);
+        Logger.debug(`重定向 → ${shortUrl(current)}`);
+      } catch (e) {
+        if (caughtLocation !== '') {
+          // 底层抛 2300047 但事件里已拿到 Location，继续下一跳
+          current = absolutize(current, caughtLocation);
+          Logger.debug(`重定向(事件) → ${shortUrl(current)}`);
+        } else {
+          // 真的失败了（DNS/TLS/连接），停止展开，返回当前 URL
+          Logger.warn(`短链展开在 ${hop + 1} 跳失败：${errText(e as object)}`);
+          return current;
+        }
+      } finally {
+        req.destroy();
       }
-      current = absolutize(current, next);
-      Logger.debug(`重定向 → ${shortUrl(current)}`);
     }
     return current;
   }
