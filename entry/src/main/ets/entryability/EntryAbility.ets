@@ -11,7 +11,7 @@
  */
 
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { window, AppStorage } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { ConfigStore } from '../core/store/ConfigStore';
@@ -32,6 +32,8 @@ export default class EntryAbility extends UIAbility {
   async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
     hilog.info(DOMAIN, TAG, 'EntryAbility onCreate');
     AppStorage.setOrCreate<string>(SHARED_URL_KEY, '');
+    // 设置页用它监听「应用内登录获取」写回的 Cookie，自动刷新体检卡
+    AppStorage.setOrCreate<number>('cookieVersion', 0);
     await this.requestPasteboardPerm();
     await ConfigStore.init(this.context);
     await TaskManager.init(this.context);

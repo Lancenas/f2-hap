@@ -5,6 +5,10 @@
  * 但去掉了桌面端才有的 save_dir / theme（手机端固定沙箱 + 系统深浅色）。
  *
  * Cookie 是抖音等平台能否解析成功的关键：没有 Cookie 时签名接口大概率返回空。
+ *
+ * Cookie 备份/还原（对应 macOS 版 cookie_manager 的备份环）：
+ *   - 每次覆盖写入前自动备份当前值（空值不备份），最多保留 MAX_BACKUPS 份；
+ *   - 设置页可一键「还原上一份」，避免手抖把好的 Cookie 覆盖了。
  */
 
 import { preferences } from '@kit.ArkData';
@@ -21,6 +25,18 @@ const K_SAVE_TO_GALLERY: string = 'save_to_gallery';
 const K_NOTIFY: string = 'notify_on_complete';
 const K_NAME_FORMAT: string = 'name_format';
 const K_USER_AGENT: string = 'user_agent';
+
+/** Cookie 备份环前缀：cookie_backup_douyin 等，值为 JSON 数组。 */
+const K_BACKUP_PREFIX: string = 'cookie_backup_';
+/** 每个平台最多保留的备份份数。 */
+const MAX_BACKUPS: number = 3;
+
+/** 单份 Cookie 备份。 */
+export interface CookieBackup {
+  cookie: string;
+  /** 写入时间戳（毫秒）。 */
+  at: number;
+}
 
 /** 默认 UA。签名与请求头必须用同一个，所以集中放在配置里。 */
 export const DEFAULT_UA: string =
@@ -39,6 +55,11 @@ export class AppConfig {
   notifyOnComplete: boolean = true;
   nameFormat: string = DEFAULT_NAME_FORMAT;
   userAgent: string = DEFAULT_UA;
+  // 备份环（内存缓存，reload 时从 preferences 载入）
+  backupDouyin: CookieBackup[] = [];
+  backupTiktok: CookieBackup[] = [];
+  backupTwitter: CookieBackup[] = [];
+  backupWeibo: CookieBackup[] = [];
 }
 
 class ConfigStoreImpl {
@@ -75,6 +96,10 @@ class ConfigStoreImpl {
     c.notifyOnComplete = await getBool(s, K_NOTIFY, true);
     c.nameFormat = await getStr(s, K_NAME_FORMAT, DEFAULT_NAME_FORMAT);
     c.userAgent = await getStr(s, K_USER_AGENT, DEFAULT_UA);
+    c.backupDouyin = await this.readBackups(s, 'douyin');
+    c.backupTiktok = await this.readBackups(s, 'tiktok');
+    c.backupTwitter = await this.readBackups(s, 'twitter');
+    c.backupWeibo = await this.readBackups(s, 'weibo');
     this.cache = c;
   }
 
@@ -82,9 +107,46 @@ class ConfigStoreImpl {
     return this.cache;
   }
 
+  /** 读取某平台当前 Cookie（内存缓存，写入即更新）。 */
+  getCookie(platform: string): string {
+    const c = this.cache;
+    if (platform === 'douyin') {
+      return c.cookieDouyin;
+    } else if (platform === 'tiktok') {
+      return c.cookieTiktok;
+    } else if (platform === 'twitter') {
+      return c.cookieTwitter;
+    } else if (platform === 'weibo') {
+      return c.cookieWeibo;
+    }
+    return '';
+  }
+
+  /** 读取某平台的备份列表（内存缓存）。 */
+  getBackups(platform: string): CookieBackup[] {
+    const c = this.cache;
+    if (platform === 'douyin') {
+      return c.backupDouyin;
+    } else if (platform === 'tiktok') {
+      return c.backupTiktok;
+    } else if (platform === 'twitter') {
+      return c.backupTwitter;
+    } else if (platform === 'weibo') {
+      return c.backupWeibo;
+    }
+    return [];
+  }
+
   /** Cookie 常带换行（用户从浏览器粘贴），必须清掉，否则请求头非法。 */
   async setCookie(platform: string, raw: string): Promise<void> {
     const clean: string = sanitizeCookie(raw);
+    const prev: string = this.getCookie(platform);
+
+    // 覆盖前自动备份（镜像 macOS「每次覆盖前备份」；空值不备份）
+    if (prev !== '' && prev !== clean) {
+      await this.pushBackup(platform);
+    }
+
     let key: string = '';
     if (platform === 'douyin') {
       key = K_COOKIE_DOUYIN;
@@ -102,6 +164,32 @@ class ConfigStoreImpl {
       return;
     }
     await this.put(key, clean);
+  }
+
+  /** 把当前值压入备份环（最多 MAX_BACKUPS 份，最新在前）。 */
+  async pushBackup(platform: string): Promise<void> {
+    const current: string = this.getCookie(platform);
+    if (current === '') {
+      return;
+    }
+    const list: CookieBackup[] = this.cacheBackups(platform);
+    list.unshift({ cookie: current, at: Date.now() });
+    const trimmed: CookieBackup[] = list.slice(0, MAX_BACKUPS);
+    this.setCacheBackups(platform, trimmed);
+    await this.put(K_BACKUP_PREFIX + platform, JSON.stringify(trimmed));
+  }
+
+  /** 从某份备份还原（默认还原最新一份 index=0）。 */
+  async restoreFromBackup(platform: string, index: number = 0): Promise<boolean> {
+    const list: CookieBackup[] = this.cacheBackups(platform);
+    if (index < 0 || index >= list.length) {
+      return false;
+    }
+    const cookie: string = list[index].cookie;
+    // 还原前把「被覆盖的那份」也备份一下，保证可撤销
+    await this.setCookie(platform, cookie);
+    Logger.info(`${platform} Cookie 已还原（来自 ${list[index].at} 的备份）`);
+    return true;
   }
 
   async setConcurrent(n: number): Promise<void> {
@@ -142,6 +230,39 @@ class ConfigStoreImpl {
       await s.flush();
     } catch (e) {
       Logger.error(`配置写入失败 ${key}：${errText(e)}`);
+    }
+  }
+
+  // ---------- 备份读写辅助 ----------
+
+  private cacheBackups(platform: string): CookieBackup[] {
+    const c = this.cache;
+    if (platform === 'douyin') return c.backupDouyin;
+    if (platform === 'tiktok') return c.backupTiktok;
+    if (platform === 'twitter') return c.backupTwitter;
+    if (platform === 'weibo') return c.backupWeibo;
+    return [];
+  }
+
+  private setCacheBackups(platform: string, list: CookieBackup[]): void {
+    const c = this.cache;
+    if (platform === 'douyin') c.backupDouyin = list;
+    else if (platform === 'tiktok') c.backupTiktok = list;
+    else if (platform === 'twitter') c.backupTwitter = list;
+    else if (platform === 'weibo') c.backupWeibo = list;
+  }
+
+  private async readBackups(s: preferences.Preferences, platform: string): Promise<CookieBackup[]> {
+    try {
+      const v: preferences.ValueType = await s.get(K_BACKUP_PREFIX + platform, '');
+      const raw: string = typeof v === 'string' ? (v as string) : '';
+      if (raw === '') {
+        return [];
+      }
+      const arr: CookieBackup[] = JSON.parse(raw) as CookieBackup[];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
     }
   }
 }
