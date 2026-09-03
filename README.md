@@ -34,11 +34,18 @@
 ```bash
 git clone https://github.com/Lancenas/f2-hap.git
 cd f2-hap
+bash scripts/setup-hooks.sh               # 启用 git hooks（一次性，防签名口令入库）
 bash scripts/dev-build.sh debug            # 构建
 bash scripts/dev-build.sh debug install    # 构建并安装到已连接设备
 ```
 
 详细的环境要求、签名配置与常见构建报错见 **[docs/BUILD.md](docs/BUILD.md)**。
+
+> **签名配置不入库。** DevEco Studio 每次执行「自动签名」都会把本机证书路径和 keystore 口令写进 `build-profile.json5` —— 口令不能外泄，绝对路径在别人机器上也不存在。因此仓库里始终保持 `"signingConfigs": []`。
+>
+> 启用 hooks 后，提交时会自动剥离这些内容：**只改索引、不动工作区**，所以 DevEco 照样能构建签名包。口令不会丢，会留存到已 gitignore 的 `build-profile.local.json5`，`dev-build.sh` 构建时自动读取。
+>
+> 如果剥离后文件与 HEAD 已经没有实质差异（只剩 DevEco 的格式重排），这次提交会直接跳过该文件，不产生无意义的 diff。
 
 首次使用需要在「设置」页配置 Cookie（抖音、微博需要；X/Twitter 免登录可直接下载）。两种获取方式：
 
@@ -69,7 +76,11 @@ f2-hap/
 │   │   └── views/                  # DownloadTab / TasksTab / LogsTab / SettingsTab / Theme
 │   ├── module.json5                # 权限、分享 skills 声明
 │   └── resources/
-├── scripts/dev-build.sh            # 一键构建 + 签名注入 + 安装
+├── .githooks/pre-commit            # 提交前剥离本机签名配置（证书路径 + keystore 口令）
+├── scripts/
+│   ├── dev-build.sh                # 一键构建 + 签名注入 + 安装
+│   ├── setup-hooks.sh              # 启用 .githooks/
+│   └── strip-signing.py            # 剥离 signingConfigs，供 pre-commit 调用
 └── docs/{BUILD.md, ARCHITECTURE.md}
 ```
 

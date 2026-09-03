@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# pre-commit —— 拦住 DevEco「自动签名」写进 build-profile.json5 的本机证书与口令。
+#
+# 背景
+# ----
+# DevEco Studio 每次执行 File > Project Structure > Signing Configs > 自动签名，
+# 都会把本机证书路径（/Users/<某人>/.ohos/config/...）和 keystore 口令写进根工程的
+# build-profile.json5。这些内容入库会：
+#   1) 泄露 keyPassword / storePassword；
+#   2) 绝对路径在别人机器上不存在，clone 后直接构建失败。
+#
+# 关键设计：只改索引，不动工作区
+# ----
+#   工作区保留签名配置  -> DevEco 自己的 Build 仍能正常签名；
+#   提交内容替换为 []   -> 口令不外泄。
+# 若剥离后与 HEAD 语义完全一致（只剩 DevEco 的格式重排），直接把索引复位到 HEAD，
+# 让这个文件在本次提交里彻底不出现。
+#
+# 启用： bash scripts/setup-hooks.sh
+#
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+PY="${ROOT}/scripts/strip-signing.py"
+[ -f "$PY" ] || exit 0
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'pre-commit: 未找到 python3，跳过签名检查（建议安装后再提交）\n' >&2
+  exit 0
+fi
+
+cyan='\033[36m'; yellow='\033[33m'; red='\033[31m'; off='\033[0m'
+
+TMP="$(mktemp -d)" || exit 0
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+FILES="$(git ls-files | grep -E '(^|/)build-profile\.json5$' || true)"
+[ -n "$FILES" ] || exit 0
+
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+
+  # 暂存区内容 —— 这才是真正会被提交的东西
+  git show ":$f" > "$TMP/staged" 2>/dev/null || continue
+  [ -s "$TMP/staged" ] || continue
+
+  # check: 0 = 含签名内容；1 = 已干净；其它 = 解析失败
+  python3 "$PY" check < "$TMP/staged" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    continue
+  elif [ "$rc" -ne 0 ]; then
+    printf "${red}[pre-commit]${off} 检查 %s 失败（退出码 %s），为安全起见阻止本次提交。\n" "$f" "$rc" >&2
+    exit 1
+  fi
+
+  # 1) 先把本机签名配置另存为已 gitignore 的本地快照，口令不丢
+  #    scripts/dev-build.sh 会优先从这里读 keyPassword / storePassword
+  if [ -f "$f" ]; then
+    cp -f "$f" "${ROOT}/build-profile.local.json5" 2>/dev/null || true
+  fi
+
+  # 2) 剥离签名配置
+  if ! python3 "$PY" strip < "$TMP/staged" > "$TMP/clean"; then
+    printf "${red}[pre-commit]${off} 剥离 %s 的签名配置失败，已阻止本次提交。\n" "$f" >&2
+    exit 1
+  fi
+
+  MODE="$(git ls-files -s -- "$f" | awk '{print $1}')"
+  [ -n "$MODE" ] || MODE="100644"
+
+  # 3) 剥离后若与 HEAD 语义一致（只剩 DevEco 格式重排），直接复位索引
+  USE_HEAD=0
+  if git cat-file -e "HEAD:$f" 2>/dev/null; then
+    git show "HEAD:$f" > "$TMP/head" 2>/dev/null || true
+    if [ -s "$TMP/head" ] &&
+       [ "$(python3 "$PY" norm < "$TMP/clean")" = "$(python3 "$PY" norm < "$TMP/head")" ]; then
+      USE_HEAD=1
+    fi
+  fi
+
+  if [ "$USE_HEAD" = "1" ]; then
+    HEAD_BLOB="$(git rev-parse "HEAD:$f")" || {
+      printf "${red}[pre-commit]${off} 读取 HEAD 版本失败，已阻止本次提交。\n" "$f" >&2
+      exit 1
+    }
+    git update-index --cacheinfo "${MODE},${HEAD_BLOB},${f}" || {
+      printf "${red}[pre-commit]${off} 复位索引失败，已阻止本次提交。\n" "$f" >&2
+      exit 1
+    }
+    printf "${yellow}[pre-commit]${off} %s 只剩 DevEco 写入的签名配置与格式重排，本次提交已跳过该文件\n" "$f"
+  else
+    BLOB="$(git hash-object -w "$TMP/clean")" || {
+      printf "${red}[pre-commit]${off} 写入 git 对象失败，已阻止本次提交。\n" "$f" >&2
+      exit 1
+    }
+    git update-index --cacheinfo "${MODE},${BLOB},${f}" || {
+      printf "${red}[pre-commit]${off} 更新索引失败，已阻止本次提交。\n" "$f" >&2
+      exit 1
+    }
+    printf "${yellow}[pre-commit]${off} 已剥离 %s 中的本机签名配置（证书路径 + keystore 口令）\n" "$f"
+  fi
+
+  printf "${cyan}             ${off} 本机配置留存于 build-profile.local.json5（已 gitignore，dev-build.sh 会读）\n"
+  printf "${cyan}             ${off} 工作区文件未改动，DevEco Studio 仍可正常构建签名包\n"
+done <<< "$FILES"
+
+exit 0
