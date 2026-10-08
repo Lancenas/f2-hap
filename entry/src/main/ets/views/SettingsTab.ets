@@ -19,7 +19,14 @@ import { TaskManager } from '../core/download/TaskManager';
 import { formatSize } from '../core/model/Models';
 import { Logger } from '../core/util/Logger';
 import { BRAND, CARD_RADIUS, GAP, MUTED, PAGE_PADDING } from './Theme';
-import { COOKIE_PLATFORMS, analyzeCookie, healthLabel, healthColor, CookiePlatform } from '../core/cookie/CookieDoctor';
+import {
+  COOKIE_PLATFORMS,
+  analyzeCookie,
+  healthLabel,
+  healthColor,
+  CookiePlatform,
+  CookieReport
+} from '../core/cookie/CookieDoctor';
 
 @Component
 export struct SettingsTab {
@@ -104,10 +111,17 @@ export struct SettingsTab {
     .borderRadius(CARD_RADIUS)
   }
 
+  /**
+   * @Builder 内部只能写 UI 组件语法，不能声明局部变量（ArkTS: 10905209）。
+   * 所以这里只做转发，把算好的体检报告作为参数传给下面的 body builder。
+   */
   @Builder
   cookiePlatformCard(meta: CookiePlatform) {
-    const cookie: string = this.cookieValue(meta.key);
-    const r = analyzeCookie(cookie, meta.key);
+    this.cookiePlatformBody(meta, analyzeCookie(this.cookieValue(meta.key), meta.key));
+  }
+
+  @Builder
+  cookiePlatformBody(meta: CookiePlatform, r: CookieReport) {
     Column({ space: 8 }) {
       Row() {
         Text(meta.name)
@@ -206,12 +220,12 @@ export struct SettingsTab {
     return '';
   }
 
-  private setCookieValue(key: string, v: string): void {
+  private async setCookieValue(key: string, v: string): Promise<void> {
     if (key === 'douyin') this.cookieDouyin = v;
     else if (key === 'weibo') this.cookieWeibo = v;
     else if (key === 'twitter') this.cookieTwitter = v;
     else if (key === 'tiktok') this.cookieTiktok = v;
-    ConfigStore.setCookie(key, v);
+    await ConfigStore.setCookie(key, v);
     Logger.info(`${key} Cookie 已更新（${v.length} 字符）`);
   }
 

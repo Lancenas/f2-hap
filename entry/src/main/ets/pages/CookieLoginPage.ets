@@ -12,7 +12,8 @@
  */
 
 import { webview } from '@kit.ArkWeb';
-import { router, promptAction, AppStorage } from '@kit.ArkUI';
+// AppStorage 是全局单例（SDK 里 declare class，无 export），不能从 @kit.ArkUI 具名导入。
+import { router, promptAction } from '@kit.ArkUI';
 import { ConfigStore } from '../core/store/ConfigStore';
 import {
   analyzeCookie, platformMeta, CookieReport,
@@ -130,13 +131,16 @@ struct CookieLoginPage {
   /** 清除应用内 Web Cookie 并清缓存，便于重新登录（不影响下载用的显式 Cookie 头）。 */
   private clearLogin(): void {
     try {
-      const ok: boolean = webview.WebCookieManager.clearAllCookies();
-      Logger.info(`清除 Web Cookie: ${ok}`);
+      // clearAllCookies() 是异步的（返回 Promise<void>），这里要同步等结果，
+      // 用官方 @useinstead 指向的 clearAllCookiesSync()。
+      webview.WebCookieManager.clearAllCookiesSync();
+      Logger.info('清除 Web Cookie：完成');
     } catch (e) {
       Logger.warn(`清除 Web Cookie 失败：${errText(e)}`);
     }
     try {
-      this.controller.clearCache();
+      // WebviewController 没有 clearCache()，清缓存是 removeCache(是否清 ROM 缓存)。
+      this.controller.removeCache(true);
     } catch (e) {
       // 忽略
     }
@@ -154,6 +158,11 @@ struct CookieLoginPage {
       cookie = await webview.WebCookieManager.fetchCookie(this.cookieUrl);
     } catch (e) {
       Logger.warn(`fetchCookie 失败：${errText(e)}`);
+      promptAction.showToast({
+        message: `抓取 Cookie 失败（${errText(e)}），请重试或在设置里手动粘贴`,
+        duration: 2200,
+      });
+      return;
     }
     if (!cookie || cookie.trim().length === 0) {
       promptAction.showToast({
@@ -164,6 +173,26 @@ struct CookieLoginPage {
     }
 
     const report: CookieReport = analyzeCookie(cookie, this.platform);
+    // 诊断日志：只打字段名，绝不打印 cookie 值（可能含 session 令牌）。
+    Logger.info(`抓取结果：共 ${report.keyCount} 个字段，` +
+      `登录态字段命中 [${report.loginKeysFound.join(' / ') || '无'}]，` +
+      `期望 [${report.loginKeysExpected.join(' / ')}]`);
+    // 抓到了 cookie 但没有登录态字段：网页内大概率还没真正登录完（扫码/SSO 跳转未完成）。
+    // 不能当成功存盘，否则设置页会一直显示「缺登录态」误导用户。
+    if (report.health === 'anonymous') {
+      Logger.warn(`抓取到的 Cookie 缺登录态字段，疑似网页内尚未真正登录`);
+      AlertDialog.show({
+        title: '还没登录成功',
+        message: `已抓到 Cookie（${report.keyCount} 个字段），但其中没有登录态字段（${report.loginKeysExpected.join(' / ')}）。` +
+          `这通常说明网页里还没真正登录，或登录跳转还没完成。请先在网页内完成登录（页面加载完成、已看到账号态），再点「获取 Cookie」。`,
+        primaryButton: {
+          value: '知道了',
+          action: () => {
+          },
+        },
+      });
+      return;
+    }
     if (report.health === 'expired') {
       AlertDialog.show({
         title: 'Cookie 已过期',
@@ -186,8 +215,11 @@ struct CookieLoginPage {
     this.applyCookie(cookie);
   }
 
-  private applyCookie(cookie: string): void {
-    ConfigStore.setCookie(this.platform, cookie);
+  private async applyCookie(cookie: string): Promise<void> {
+    // 必须 await：setCookie 是异步的，且内部会在更新内存缓存前先 await pushBackup。
+    // 若不等写入完成就 bump cookieVersion，设置页 @Watch('reload') 会读到尚未更新的空缓存，
+    // 体检卡误判为 empty → 显示「未设置」。所以先 await 落盘，再通知刷新并退出。
+    await ConfigStore.setCookie(this.platform, cookie);
     // 通知设置页体检卡刷新
     const v: number = (AppStorage.get('cookieVersion') as number) || 0;
     AppStorage.set('cookieVersion', v + 1);
@@ -197,12 +229,18 @@ struct CookieLoginPage {
   }
 }
 
+/** 异常的可能形状。ArkTS 不允许拿对象字面量直接当类型声明（arkts-no-obj-literals-as-types）。 */
+interface ErrorLike {
+  code?: number;
+  message?: string;
+}
+
 /** 异常文本提取（避免与 ConfigStore 耦合，这里内联一份）。 */
 function errText(e: object | undefined): string {
   if (e === undefined || e === null) {
     return 'unknown';
   }
-  const be = e as { code?: number; message?: string };
+  const be = e as ErrorLike;
   if (be.message !== undefined) {
     return be.code !== undefined ? `[${be.code}] ${be.message}` : be.message;
   }

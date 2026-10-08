@@ -11,6 +11,7 @@
 import { promptAction } from '@kit.ArkUI';
 import { DownloadTab } from '../views/DownloadTab';
 import { TasksTab } from '../views/TasksTab';
+import { FilesTab } from '../views/FilesTab';
 import { LogsTab } from '../views/LogsTab';
 import { SettingsTab } from '../views/SettingsTab';
 import { BRAND, MUTED } from '../views/Theme';
@@ -104,14 +105,19 @@ struct Index {
       .tabBar(this.tabItem(1, '☰', '任务', this.activeCount))
 
       TabContent() {
+        FilesTab()
+      }
+      .tabBar(this.tabItem(2, '📁', '文件', 0))
+
+      TabContent() {
         LogsTab()
       }
-      .tabBar(this.tabItem(2, '✎', '日志', 0))
+      .tabBar(this.tabItem(3, '✎', '日志', 0))
 
       TabContent() {
         SettingsTab()
       }
-      .tabBar(this.tabItem(3, '⚙', '设置', 0))
+      .tabBar(this.tabItem(4, '⚙', '设置', 0))
     }
     .barMode(BarMode.Fixed)
     .barHeight(56)

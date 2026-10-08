@@ -11,7 +11,9 @@
  */
 
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { window, AppStorage } from '@kit.ArkUI';
+// AppStorage 是全局单例（SDK 的 common_ts_ets_api.d.ts 里 declare class，无 export），
+// 不能从 @kit.ArkUI 具名导入 —— 那个 Kit 只导出 AppStorageV2 / PersistenceV2。
+import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { ConfigStore } from '../core/store/ConfigStore';
@@ -34,6 +36,10 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate<string>(SHARED_URL_KEY, '');
     // 设置页用它监听「应用内登录获取」写回的 Cookie，自动刷新体检卡
     AppStorage.setOrCreate<number>('cookieVersion', 0);
+    // 真正的 UIAbilityContext 存进 AppStorage，供页面里需要弹系统窗的调用使用
+    // （showAssetsCreationDialog 必须把弹窗挂在 UIAbility 上；组件内 getContext(this) 拿到的是
+    // 组件 context，挂相册 UIExtension 会瞬间 detach，弹窗秒关）。
+    AppStorage.setOrCreate('uiAbilityContext', this.context);
     await this.requestPasteboardPerm();
     await ConfigStore.init(this.context);
     await TaskManager.init(this.context);

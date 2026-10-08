@@ -41,6 +41,7 @@ done
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${PROJECT_ROOT}/build-profile.json5"
 BACKUP="${PROJECT_ROOT}/build-profile.json5.bak"
+LOCAL_CFG="${PROJECT_ROOT}/build-profile.local.json5"
 
 log()  { printf '\033[36m[build]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn ]\033[0m %s\n' "$*"; }
@@ -91,14 +92,37 @@ done
 [ -n "$HVIGORW" ] || die "找不到 hvigorw。请确认已安装 DevEco Studio。"
 
 # ---------------------------------------------------------------- 4. 签名证书
-# 优先匹配与本工程相关的调试证书（如 default_f2-hap_*），找不到再回退通用 default_harmony_*。
-CER="$(ls "${HOME}"/.ohos/config/*f2-hap*.cer 2>/dev/null | head -1 || true)"
-P12="$(ls "${HOME}"/.ohos/config/*f2-hap*.p12 2>/dev/null | head -1 || true)"
-P7B="$(ls "${HOME}"/.ohos/config/*f2-hap*.p7b 2>/dev/null | head -1 || true)"
-if [ -z "$CER" ] || [ -z "$P12" ] || [ -z "$P7B" ]; then
-  CER="$(ls "${HOME}"/.ohos/config/default_harmony_*.cer 2>/dev/null | head -1 || true)"
-  P12="$(ls "${HOME}"/.ohos/config/default_harmony_*.p12 2>/dev/null | head -1 || true)"
-  P7B="$(ls "${HOME}"/.ohos/config/default_harmony_*.p7b 2>/dev/null | head -1 || true)"
+# 证书与口令必须成套使用。~/.ohos/config 里可能同时躺着好几套同工程的证书
+# （DevEco 每次重新自动签名都会生成一套新的），分别 ls 三种后缀再 head -1 是**字母序**，
+# 会把新口令配到旧证书上，SignHap 阶段报 11014003 / keystore password was incorrect。
+#
+# 选取顺序：
+#   1) 口令来源（build-profile.json5 或 build-profile.local.json5）里 certpath 指的那套 —— 最可靠
+#   2) 否则取本工程最新的一套（ls -t，按修改时间倒序）
+#   3) 再没有就回退通用的 default_harmony_*
+pick_cert_stem() {
+  local hint="$1"
+  local newest=""
+  if [ -n "$hint" ] && [ -f "$hint" ]; then
+    printf '%s' "${hint%.cer}"
+    return 0
+  fi
+  newest="$(ls -t "${HOME}"/.ohos/config/*f2-hap*.cer 2>/dev/null | head -1 || true)"
+  if [ -z "$newest" ]; then
+    newest="$(ls -t "${HOME}"/.ohos/config/default_harmony_*.cer 2>/dev/null | head -1 || true)"
+  fi
+  printf '%s' "${newest%.cer}"
+}
+
+CERT_HINT="$(sed -n 's/.*"certpath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROFILE" 2>/dev/null | head -1)"
+if [ -z "$CERT_HINT" ] && [ -f "$LOCAL_CFG" ]; then
+  CERT_HINT="$(sed -n 's/.*"certpath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOCAL_CFG" | head -1)"
+fi
+
+CERT_STEM="$(pick_cert_stem "$CERT_HINT")"
+CER=""; P12=""; P7B=""
+if [ -n "$CERT_STEM" ] && [ -f "${CERT_STEM}.cer" ] && [ -f "${CERT_STEM}.p12" ] && [ -f "${CERT_STEM}.p7b" ]; then
+  CER="${CERT_STEM}.cer"; P12="${CERT_STEM}.p12"; P7B="${CERT_STEM}.p7b"
 fi
 
 APP_BUNDLE="$(sed -n 's/.*"bundleName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${PROJECT_ROOT}/AppScope/app.json5" | head -1)"
@@ -180,7 +204,6 @@ trap restore_profile EXIT INT TERM
 
 KEY_PASSWORD=""
 STORE_PASSWORD=""
-LOCAL_CFG="${PROJECT_ROOT}/build-profile.local.json5"
 if [ "$SIGNED" = "1" ]; then
   KEY_PASSWORD="${OHOS_KEY_PASSWORD:-}"
   STORE_PASSWORD="${OHOS_STORE_PASSWORD:-}"
@@ -223,12 +246,18 @@ if [ "$SIGNED" = "1" ]; then
   fi
 fi
 
-if [ "$SIGNED" = "1" ] && [ "$USE_DEV_PROFILE" = "0" ]; then
+if [ "$SIGNED" = "1" ]; then
   BUNDLE_OVERRIDE=""
   if [ "$EFFECTIVE_BUNDLE" != "$APP_BUNDLE" ]; then
     BUNDLE_OVERRIDE="\"bundleName\": \"${EFFECTIVE_BUNDLE}\","
   fi
-  cp -f "$PROFILE" "$BACKUP"
+  # 仅在「从 ~/.ohos/config 注入」(USE_DEV_PROFILE=0) 时备份原文件并在退出时还原为干净模板，
+  # 避免本机口令残留工作区；复用 DevEco 已写入的签名配置时不备份、不还原，
+  # 并强制补上 products[].signingConfig 引用（DevEco 自动签名只写物料、不写引用，
+  # 缺引用会导致 hvigor 产出未签名 HAP）。
+  if [ "$USE_DEV_PROFILE" = "0" ]; then
+    cp -f "$PROFILE" "$BACKUP"
+  fi
   cat > "$PROFILE" <<EOF
 {
   "app": {
