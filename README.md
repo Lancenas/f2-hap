@@ -21,11 +21,12 @@
 - **剪贴板自动识别** —— 打开应用即读剪贴板，识别到链接自动填入
 - **短链展开** —— `v.douyin.com` / `t.cn` / `t.co` 自动跟随跳转，展开后重新判定平台
 - **多档码率择优** —— 视频取 `video/mp4` 中 bitrate 最高档，跳过 m3u8；图片取原图（`?name=orig` / `largest`）
-- **存入系统相册** —— 走 `showAssetsCreationDialog` 弹窗授权，**不申请受限权限**，无需 ACL 审批
+- **存入系统相册** —— 走 `showAssetsCreationDialog` 弹窗授权，**不申请受限权限（`WRITE_IMAGEVIDEO`）**，无需 ACL 审批；另声明两个**普通**权限 `READ_MEDIA` / `WRITE_MEDIA`（读取沙箱外 URI、写入媒体库），首次使用时动态申请
 - **断点式落盘** —— 流式写 `.part` 临时文件，完成后 rename，避免半成品混入
 - **并发闸门** —— 1~5 可调，任务队列常驻同一 ArkTS 运行时
 - **实时日志** —— 分级过滤、一键复制，解析失败能直接看到是哪一步断的
-- **Cookie 体检与「应用内登录获取」** —— 设置页每个平台实时显示健康状态（正常 / 即将过期 / 已过期 / 缺登录态）；抖音、微博支持在应用内网页登录后自动抓取登录态，免去手动复制；覆盖前自动备份，可一键还原上一份
+- **Cookie 体检与「应用内登录获取」** —— 设置页每个平台实时显示健康状态（正常 / 即将过期 / 已过期 / 缺登录态）；抖音、微博支持在应用内网页登录后自动抓取登录态，免去手动复制。**抓到的 Cookie 若不含登录态字段**（网页里大概率还没真正登录完）**会拒绝保存并弹窗提示**，不会误报「已保存」；覆盖前自动备份，可一键还原上一份
+- **应用内文件管理** —— 第 5 个「文件」Tab 直接浏览沙箱 `filesDir/downloads/<平台>/` 下已下载的内容，支持**打开**（交给系统应用）、**分享**、**批量存相册**、**删除**。首次触发时动态申请 `READ_MEDIA` / `WRITE_MEDIA`，被拒也不阻塞，仍走系统授权模型
 
 ---
 
@@ -46,10 +47,12 @@ bash scripts/dev-build.sh debug install    # 构建并安装到已连接设备
 > 启用 hooks 后，提交时会自动剥离这些内容：**只改索引、不动工作区**，所以 DevEco 照样能构建签名包。口令不会丢，会留存到已 gitignore 的 `build-profile.local.json5`，`dev-build.sh` 构建时自动读取。
 >
 > 如果剥离后文件与 HEAD 已经没有实质差异（只剩 DevEco 的格式重排），这次提交会直接跳过该文件，不产生无意义的 diff。
+>
+> ⚠️ **提交前最好先复位该文件**：钩子只剥离 `signingConfigs` 里的物料，**不会**剥离 `products[].signingConfig: "default"` 这个引用（`dev-build.sh` 复用 DevEco 配置时会补上它）。若带着引用一起提交，索引里签名配置会被剥成 `[]` 而引用仍在，别人 clone 后 hvigor 会报找不到签名配置、构建失败。所以提交前先 `git checkout -- build-profile.json5` 复位成 HEAD 干净态，钩子会判定「与 HEAD 无差异」并整份跳过该文件。
 
 首次使用需要在「设置」页配置 Cookie（抖音、微博需要；X/Twitter 免登录可直接下载）。两种获取方式：
 
-- **应用内登录获取（推荐）**：抖音 / 微博卡片点「应用内登录获取」，在弹出的网页里登录账号，登录成功后点「获取 Cookie」，应用会自动抓取登录态并写回。带过期检测，网页里 Cookie 已过期会拒绝保存并提示先重登。
+- **应用内登录获取（推荐）**：抖音 / 微博卡片点「应用内登录获取」，在弹出的网页里登录账号，登录成功后点「获取 Cookie」，应用会自动抓取登录态并写回。带过期检测：网页里 Cookie 已过期会拒绝保存并提示先重登；**抓到了 Cookie 但里面没有登录态字段**时也会拦下并提示「还没登录成功」，请先确认网页内已完成登录（看到账号态）再点「获取 Cookie」。抓取失败（接口异常）会直接 toast 报错，不会静默。
 - **从剪贴板粘贴**：电脑浏览器登录后，开发者工具 → Network → 任一请求 → 复制 Cookie 整行，回应用点「粘贴」。
 
 设置页每个平台都带实时体检卡（含到期时间与剩余天数），启动时若抖音 / 微博 Cookie 已过期会弹一次提醒。每次覆盖前自动备份，可「还原上一份」回退。
@@ -71,9 +74,9 @@ f2-hap/
 │   │   │   ├── download/           # Downloader（流式）、GallerySaver（相册）、TaskManager（队列）
 │   │   │   ├── store/ConfigStore   # preferences 持久化（Cookie / UA / 并发 / 开关）
 │   │   │   └── util/Logger.ets     # 环形缓冲 + 订阅推送
-│   │   ├── entryability/           # EntryAbility：初始化 + 接收系统分享
-│   │   ├── pages/Index.ets         # 四 Tab 主入口
-│   │   └── views/                  # DownloadTab / TasksTab / LogsTab / SettingsTab / Theme
+│   │   ├── entryability/           # EntryAbility：初始化 + 接收系统分享 + 存 UIAbilityContext 到 AppStorage（相册弹窗必需）
+│   │   ├── pages/Index.ets         # 五 Tab 主入口：下载 / 任务 / 文件 / 日志 / 设置
+│   │   └── views/                  # DownloadTab / TasksTab / FilesTab / LogsTab / SettingsTab / Theme
 │   ├── module.json5                # 权限、分享 skills 声明
 │   └── resources/
 ├── .githooks/pre-commit            # 提交前剥离本机签名配置（证书路径 + keystore 口令）
@@ -81,7 +84,7 @@ f2-hap/
 │   ├── dev-build.sh                # 一键构建 + 签名注入 + 安装
 │   ├── setup-hooks.sh              # 启用 .githooks/
 │   └── strip-signing.py            # 剥离 signingConfigs，供 pre-commit 调用
-└── docs/{BUILD.md, ARCHITECTURE.md}
+└── docs/{BUILD.md, BLOG-CSDN.md}   # 构建与排错指南 / 移植复盘长文
 ```
 
 ## 与 macOS 版的架构差异
@@ -108,7 +111,8 @@ UI (ArkUI)  ──订阅──▶  TaskManager（内存队列 + 并发闸门）
 
 - Cookie 只存在应用沙箱的 `preferences` 里，不上传、不出设备
 - 除目标平台自家域名外，不连任何服务器；没有统计、没有埋点
-- 下载文件落在沙箱 `filesDir/downloads`，存相册需要你在系统弹窗里逐次确认
+- 下载文件落在沙箱 `filesDir/downloads`，可在「文件」Tab 内直接浏览；存相册需要你在系统弹窗里逐次确认
+- 申请的权限共 6 个：`INTERNET`、`GET_NETWORK_INFO`、`KEEP_BACKGROUND_RUNNING`、`READ_PASTEBOARD`、`READ_MEDIA`、`WRITE_MEDIA` —— **无受限权限**，无需 ACL 审批
 
 ## 免责声明
 
